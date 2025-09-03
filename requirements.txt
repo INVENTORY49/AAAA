@@ -1,5 +1,8 @@
-fastapi
-uvicorn
-pydantic
-gspread
-google-auth
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic[email]>=2.7
+# si subes archivos:
+python-multipart>=0.0.9
+# (opcional según tu app)
+python-dotenv>=1.0
+httpx>=0.27

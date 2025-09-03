@@ -48,6 +48,147 @@ async def _http_exc(request: Request, exc: StarletteHTTPException):
         log.warning("🚫 404 en %s. Rutas=%s", request.url.path, paths)
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
+
+# ---------- PROCESO DE VINCULACION DE INVENTARIO  ----------
+# ====== Google Sheets helpers (service account) ======
+import json
+import gspread
+from google.oauth2.service_account import Credentials
+from fastapi import Body
+from fastapi.responses import JSONResponse
+
+SHEETS_SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
+
+def _load_sa_info() -> dict:
+    sa_env = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not sa_env:
+        raise HTTPException(
+            500,
+            "Falta GOOGLE_SERVICE_ACCOUNT_JSON en variables de entorno."
+        )
+    try:
+        return json.loads(sa_env)
+    except Exception:
+        raise HTTPException(500, "GOOGLE_SERVICE_ACCOUNT_JSON no es JSON válido")
+
+def get_service_account_email() -> str:
+    try:
+        return _load_sa_info().get("client_email", "")
+    except Exception:
+        return ""
+
+def _gspread_client() -> gspread.Client:
+    creds = Credentials.from_service_account_info(_load_sa_info(), scopes=SHEETS_SCOPE)
+    return gspread.authorize(creds)
+
+def extract_sheet_id(sheet_url_or_id: str) -> str:
+    sheet_url_or_id = (sheet_url_or_id or "").strip()
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", sheet_url_or_id)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", sheet_url_or_id):
+        return sheet_url_or_id
+    raise HTTPException(400, "URL/ID de Google Sheets inválida")
+
+def _open_spreadsheet(sheet_id: str) -> gspread.Spreadsheet:
+    gc = _gspread_client()
+    try:
+        return gc.open_by_key(sheet_id)
+    except gspread.exceptions.SpreadsheetNotFound:
+        # Devolvemos 403 con email de la SA para que el front lo muestre
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "La cuenta de servicio no tiene acceso al Sheet. "
+                    "Compártelo con: " + get_service_account_email()
+                ),
+                "service_account_email": get_service_account_email(),
+            },
+        )
+
+def _pick_products_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
+    # 1) Nombres comunes
+    for name in ("Products", "Inventario", "Inventory", "Stock"):
+        try:
+            return sh.worksheet(name)
+        except Exception:
+            pass
+    # 2) Heurística por headers
+    for ws in sh.worksheets():
+        headers = [h.strip().lower() for h in (ws.row_values(1) or [])]
+        score = 0
+        for key in ("sku", "stock", "price", "name", "nombre", "lowthreshold"):
+            if key in headers:
+                score += 1
+        if score >= 2:
+            return ws
+    # 3) Fallback: la primera
+    return sh.sheet1
+
+def _summarize_records(rows: list[dict]) -> dict:
+    # Conteo SKUs únicos, low stock si hay columnas
+    skus = set()
+    low_items = 0
+    for r in rows:
+        sku = str(r.get("SKU", r.get("sku", ""))).strip()
+        if sku:
+            skus.add(sku)
+        # low stock
+        try:
+            stock = int(str(r.get("Stock", r.get("stock", 0))).split()[0].replace(",", ""))
+            th = int(str(r.get("LowThreshold", r.get("lowthreshold", 0))).split()[0].replace(",", ""))
+            if stock <= th:
+                low_items += 1
+        except Exception:
+            pass
+    return {"sku_count": len(skus), "low_stock_items": low_items}
+
+# ====== API: conectar y leer inventario ======
+class ConnectBody(BaseModel):
+    sheet: str
+
+@app.post("/connect")
+def connect_inventory(body: ConnectBody):
+    sid = extract_sheet_id(body.sheet)
+    sh = _open_spreadsheet(sid)
+    # _open_spreadsheet puede devolver JSONResponse en caso de 403
+    if isinstance(sh, JSONResponse):
+        return sh
+
+    ws = _pick_products_ws(sh)
+    rows = ws.get_all_records()
+    sample = rows[:10]
+    summary = {
+        "sheet_title": sh.title,
+        "sheet_id": sid,
+        "worksheet": ws.title,
+        "rows_total": len(rows),
+        **_summarize_records(rows),
+    }
+    return {"ok": True, "sheet_id": sid, "summary": summary, "sample": sample}
+
+@app.get("/inv/data")
+def inv_data(sid: str):
+    sid = extract_sheet_id(sid)
+    sh = _open_spreadsheet(sid)
+    if isinstance(sh, JSONResponse):
+        return sh
+    ws = _pick_products_ws(sh)
+    rows = ws.get_all_records()
+    return {
+        "ok": True,
+        "sheet_title": sh.title,
+        "worksheet": ws.title,
+        "rows_total": len(rows),
+        "summary": _summarize_records(rows),
+        "items": rows[:200],  # limit de muestra
+    }
+
+
+
+
+
 # ---------- diagnóstico ----------
 @app.get("/__routes", include_in_schema=False)
 def __routes():
@@ -73,150 +214,191 @@ DASHBOARD_HTML = r"""
     :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
     *{box-sizing:border-box}
     body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--fg);margin:0}
-    main{max-width:640px;margin:8vh auto;padding:24px}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 6px 16px rgba(0,0,0,.25);margin-bottom:16px}
+    main{max-width:640px;margin:10vh auto;padding:24px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 6px 16px rgba(0,0,0,.25)}
     h1{font-size:22px;margin:0 0 12px}
-    h2{font-size:18px;margin:0 0 8px}
     p{margin:0 0 12px}
     .muted{color:var(--muted)}
-    a:link,a:visited{color:#9fd8ff}
-
+    .inp{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
+    .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
     .btn{display:inline-block;padding:12px 14px;border-radius:12px;border:1px solid #2e7d32;background:var(--accent);color:#fff;
          font-weight:700;cursor:pointer;text-align:center;text-decoration:none}
     .btn:disabled{opacity:.6;cursor:not-allowed}
     .btn-outline{display:inline-block;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
-
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    .actions{display:flex;gap:8px;margin-top:10px}
-    .inp{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
-    code{background:#0b0d10;border:1px solid var(--line);padding:3px 6px;border-radius:8px}
     .pill{display:inline-block;padding:4px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--muted)}
-    pre{white-space:pre-wrap}
+    code{background:#0b0d10;border:1px solid var(--line);padding:3px 6px;border-radius:8px}
   </style>
 </head>
 <body>
   <main>
-
-    <!-- Vincular inventario -->
     <section class="card">
-      <h1>Vincula tu inventario</h1>
-      <p class="muted">Pega aquí el <b>link de tu inventario</b> (puede ser una URL cualquiera; si es Google Sheets detectamos el ID). Por ahora solo lo guardamos en tu navegador para usarlo luego.</p>
+      <h1>Vincula aquí tu inventario</h1>
+      <p class="muted">Pega el <b>link del inventario</b>. Si es Google Sheets, detectaremos el ID y lo conectaremos.</p>
 
       <label for="sheet" class="muted">URL del inventario</label>
       <input id="sheet" class="inp" type="text" placeholder="https://docs.google.com/spreadsheets/d/…">
 
       <div class="actions">
-        <button class="btn" onclick="saveUrl()">Guardar vínculo</button>
+        <button id="actionBtn" class="btn" disabled onclick="connectNow()">Conectar con inventario</button>
         <button class="btn-outline" onclick="clearUrl()">Quitar</button>
       </div>
 
       <p id="msg" class="muted" style="margin-top:8px"></p>
 
       <div id="savedBox" style="display:none;margin-top:10px">
-        <h2>Guardado</h2>
         <div class="row">
-          <span class="pill">URL</span>
-          <code id="showUrl"></code>
-          <button class="btn-outline" onclick="copyText('#showUrl')">Copiar</button>
+          <span class="pill">URL</span><code id="showUrl"></code>
         </div>
         <div class="row" style="margin-top:8px">
-          <span class="pill">Sheet ID</span>
-          <code id="showId"></code>
-          <button class="btn-outline" onclick="copyText('#showId')">Copiar</button>
+          <span class="pill">Sheet ID</span><code id="showId"></code>
         </div>
       </div>
     </section>
-
-    <!-- Utilidades / estado -->
-    <section class="card">
-      <h2>Utilidades</h2>
-      <div class="row">
-        <a class="btn" href="/__routes" target="_blank">Ver rutas</a>
-        <a class="btn" href="/docs" target="_blank">Docs</a>
-        <a class="btn" href="/ping" target="_blank">Ping</a>
-      </div>
-
-      <div style="margin-top:14px">
-        <small class="muted">Estado:</small>
-        <pre id="out" class="muted">Cargando…</pre>
-      </div>
-    </section>
-
   </main>
 
 <script>
 const $ = s => document.querySelector(s);
-
 function showMsg(t){ $("#msg").textContent = t || ""; }
 
 function extractSheetId(v){
   if(!v) return null;
   const m = v.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if(m) return m[1];
-  if(/^[a-zA-Z0-9-_]{20,}$/.test(v)) return v; // parece ID cruda
+  if(/^[a-zA-Z0-9-_]{20,}$/.test(v)) return v;
   return null;
+}
+
+function updateButtonState(){
+  const hasVal = ($("#sheet").value || "").trim().length > 0;
+  $("#actionBtn").disabled = !hasVal;
 }
 
 function renderSaved(){
   const url = localStorage.getItem("inv_sheet_url") || "";
   const id  = localStorage.getItem("inv_sheet_id") || "";
-  if(url){
-    $("#savedBox").style.display = "";
-    $("#showUrl").textContent = url;
-    $("#showId").textContent  = id || "(ID no detectada)";
-  }else{
-    $("#savedBox").style.display = "none";
-  }
+  $("#savedBox").style.display = url ? "" : "none";
+  $("#showUrl").textContent = url || "";
+  $("#showId").textContent  = id || "";
 }
 
-function saveUrl(){
+async function connectNow(){
   const raw = ($("#sheet").value || "").trim();
   if(!raw){ showMsg("Escribe un enlace primero."); return; }
-  localStorage.setItem("inv_sheet_url", raw);
-  const id = extractSheetId(raw);
-  if(id) localStorage.setItem("inv_sheet_id", id);
-  else   localStorage.removeItem("inv_sheet_id");
-  renderSaved();
-  showMsg("¡Listo! Enlace guardado en este navegador.");
+
+  const btn = $("#actionBtn");
+  btn.disabled = true; const prev = btn.textContent; btn.textContent = "Conectando…";
+  showMsg("");
+
+  try{
+    const res = await fetch('/connect', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ sheet: raw })
+    });
+    const j = await res.json().catch(()=>({}));
+
+    if(!res.ok){
+      const extra = j.service_account_email ? ` — comparte tu Sheet con: ${j.service_account_email}` : "";
+      showMsg((j.detail || "No se pudo conectar") + extra);
+    }else{
+      // guardamos
+      localStorage.setItem("inv_sheet_url", raw);
+      localStorage.setItem("inv_sheet_id", j.sheet_id);
+      renderSaved();
+      showMsg("Inventario conectado ✔");
+      // abre la interfaz de inventario en nueva pestaña
+      window.open('/inv?sid=' + encodeURIComponent(j.sheet_id), '_blank');
+    }
+  }catch(e){
+    showMsg("Error de red: " + (e && e.message || e));
+  }finally{
+    btn.disabled = false; btn.textContent = prev;
+  }
 }
 
 function clearUrl(){
   localStorage.removeItem("inv_sheet_url");
   localStorage.removeItem("inv_sheet_id");
   $("#sheet").value = "";
-  renderSaved();
-  showMsg("Se eliminó el vínculo guardado.");
+  updateButtonState(); renderSaved(); showMsg("Se eliminó el vínculo guardado.");
 }
 
-async function copyText(sel){
-  const el = $(sel);
-  const txt = (el && el.textContent || "").trim();
-  if(!txt) return;
-  try { await navigator.clipboard.writeText(txt); showMsg("Copiado al portapapeles."); }
-  catch(_){ showMsg("No se pudo copiar. Selecciona y copia manualmente."); }
-}
-
-window.addEventListener("load", async ()=>{
-  // precarga desde localStorage
+window.addEventListener("load", ()=>{
   const url = localStorage.getItem("inv_sheet_url") || "";
   if(url) $("#sheet").value = url;
-  renderSaved();
-
-  // estado simple (ping + conteo de rutas)
-  try{
-    const [pingRes, routesRes] = await Promise.all([
-      fetch('/ping').then(r => r.json()).catch(()=>({})),
-      fetch('/__routes').then(r => r.json()).catch(()=>[])
-    ]);
-    $("#out").textContent = JSON.stringify({ ping: pingRes, routes_count: (routesRes||[]).length }, null, 2);
-  }catch(e){
-    $("#out").textContent = 'Error: ' + (e && e.message || e);
-  }
+  updateButtonState(); renderSaved();
+});
+window.addEventListener("input", e=>{
+  if(e.target && e.target.id === "sheet") updateButtonState();
 });
 </script>
 </body>
 </html>
 """
+@app.get("/inv", response_class=HTMLResponse)
+def inv_page():
+    return HTMLResponse(INVENTORY_HTML)
+
+INVENTORY_HTML = r"""
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Inventario conectado</title>
+<style>
+  :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  main{max-width:980px;margin:6vh auto;padding:24px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+  h1{margin:0 0 12px}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}
+  small{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Inventario conectado</h1>
+    <small id="meta">Cargando…</small>
+    <div id="wrap"></div>
+  </div>
+</main>
+<script>
+(async function(){
+  const url = new URL(location.href);
+  const sid = url.searchParams.get('sid') || (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
+  if(!sid){ document.getElementById('meta').textContent = 'Falta sid'; return; }
+
+  try{
+    const res = await fetch('/inv/data?sid=' + encodeURIComponent(sid));
+    const j = await res.json();
+    if(!res.ok){ document.getElementById('meta').textContent = j.detail || 'Error'; return; }
+
+    document.getElementById('meta').textContent =
+      `${j.sheet_title} — hoja: ${j.worksheet} — filas: ${j.rows_total} — SKUs: ${j.summary?.sku_count ?? '-'} — Low stock: ${j.summary?.low_stock_items ?? '-'}`;
+
+    const rows = j.items || [];
+    if(!rows.length){ document.getElementById('wrap').innerHTML = '<p>No hay filas.</p>'; return; }
+
+    const cols = Object.keys(rows[0]);
+    let html = '<table><thead><tr>' + cols.map(c=>'<th>'+c+'</th>').join('') + '</tr></thead><tbody>';
+    for(const r of rows){
+      html += '<tr>' + cols.map(c=>'<td>'+(r[c] ?? '')+'</td>').join('') + '</tr>';
+    }
+    html += '</tbody></table>';
+    document.getElementById('wrap').innerHTML = html;
+  }catch(e){
+    document.getElementById('meta').textContent = 'Error: ' + (e && e.message || e);
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

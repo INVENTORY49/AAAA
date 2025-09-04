@@ -232,33 +232,46 @@ def _to_int(x):
     except Exception:
         return None
 
+def _compose_name(row: dict) -> str:
+    """Construye nombre: MARCA + MODELO + Talla X (si existe)."""
+    marca = str(_first(row, ["marca", "Marca", "brand", "Brand"]) or "").strip()
+    modelo = str(_first(row, ["modelo", "Modelo", "model", "Model"]) or "").strip()
+    talla = str(_first(row, ["talla", "Talla", "size", "Size", "numero", "número"]) or "").strip()
+    parts = []
+    if marca:  parts.append(marca)
+    if modelo: parts.append(modelo)
+    if talla:  parts.append(f"Talla {talla}")
+    if not parts:
+        # Fallback a nombre genérico de producto si no hay marca/modelo
+        parts.append(str(_first(row, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip())
+    return " ".join([p for p in parts if p])
+
 def _low_stock_alerts(rows: list[dict]) -> list[dict]:
     """
     Devuelve [{sku, name, stock, threshold}] cuando cantidad < LOW_STOCK_THRESHOLD.
-    Usa columnas típicas para cantidad: cantidad, qty, existencias, unidades
-    (si no están, intenta con 'Stock'/'stock' solo si es numérica).
+    'name' = "MARCA MODELO Talla X" para que aparezca completo en la UI.
     """
     alerts = []
     for r in rows:
-        # cantidad REAL (numérica), evita usar "stock" si es "SI/NO"
+        # cantidad real (numérica). Evita usar 'stock' si es "SI/NO".
         qty = _to_int(_first(r, ["cantidad", "qty", "existencias", "unidades"]))
         if qty is None:
-            # fallback solo si 'stock' es numérico
-            qty = _to_int(_first(r, ["Stock", "stock"]))
+            qty = _to_int(_first(r, ["Stock", "stock"]))  # solo si es numérico
 
         if qty is None:
-            continue  # no hay cantidad interpretable
+            continue
 
-        if qty < LOW_STOCK_THRESHOLD:  # <-- REGLA: menos de 5 (o el umbral)
+        if qty < LOW_STOCK_THRESHOLD:
             sku  = str(_first(r, ["SKU", "sku", "codigo", "código", "ref", "referencia"]) or "").strip()
-            name = str(_first(r, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip()
+            name = _compose_name(r)
             alerts.append({
                 "sku": sku,
                 "name": name,
-                "stock": qty,
-                "threshold": LOW_STOCK_THRESHOLD
+                "stock": qty,                     # stock restante
+                "threshold": LOW_STOCK_THRESHOLD  # umbral usado (5 por default)
             })
     return alerts
+
 
 # ====== API: conectar y leer inventario ======
 class ConnectBody(BaseModel):

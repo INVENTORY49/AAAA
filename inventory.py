@@ -50,11 +50,11 @@ async def _http_exc(request: Request, exc: StarletteHTTPException):
 
 
 # ---------- PROCESO DE VINCULACION DE INVENTARIO  ----------
-# ====== Google Sheets helpers (service account) ======
-import json
+import os, re, json
+from fastapi import HTTPException
+from pydantic import BaseModel
 import gspread
 from google.oauth2.service_account import Credentials
-from fastapi import Body
 from fastapi.responses import JSONResponse
 
 SHEETS_SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -184,6 +184,7 @@ def inv_data(sid: str):
         "summary": _summarize_records(rows),
         "items": rows[:200],  # limit de muestra
     }
+
 
 
 

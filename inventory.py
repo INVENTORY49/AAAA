@@ -78,29 +78,24 @@ def _load_sa_info() -> dict:
       3) GOOGLE_SERVICE_ACCOUNT_JSON (compatibilidad: ruta o JSON)
       4) GOOGLE_SERVICE_ACCOUNT_JSON_B64 (compatibilidad: Base64)
     """
-    # Preferidas en Render:
     raw = os.getenv("GOOGLE_CREDS_JSON") or ""
     b64 = os.getenv("GOOGLE_CREDS_JSON_B64") or ""
 
-    # Compat (por si ya las tienes puestas):
     raw_fallback = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
     b64_fallback = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64") or ""
 
-    # 1) GOOGLE_CREDS_JSON (ruta o JSON)
     if raw:
-        if os.path.exists(raw):  # archivo
+        if os.path.exists(raw):
             try:
                 with open(raw, "r", encoding="utf-8") as f:
                     return json.loads(f.read())
             except Exception as e:
                 raise HTTPException(500, f"Archivo de credenciales inválido en GOOGLE_CREDS_JSON: {e}")
-        # JSON plano
         try:
             return json.loads(raw)
         except Exception:
             pass
 
-    # 2) GOOGLE_CREDS_JSON_B64 (Base64)
     if b64:
         try:
             dec = base64.b64decode(b64).decode("utf-8")
@@ -108,7 +103,6 @@ def _load_sa_info() -> dict:
         except Exception as e:
             raise HTTPException(500, f"GOOGLE_CREDS_JSON_B64 inválido: {e}")
 
-    # 3) Compat: GOOGLE_SERVICE_ACCOUNT_JSON (ruta o JSON)
     if raw_fallback:
         if os.path.exists(raw_fallback):
             try:
@@ -121,7 +115,6 @@ def _load_sa_info() -> dict:
         except Exception:
             pass
 
-    # 4) Compat: GOOGLE_SERVICE_ACCOUNT_JSON_B64 (Base64)
     if b64_fallback:
         try:
             dec = base64.b64decode(b64_fallback).decode("utf-8")
@@ -158,7 +151,7 @@ def _open_spreadsheet(sheet_id: str):
     try:
         return gc.open_by_key(sheet_id)
     except gspread.exceptions.SpreadsheetNotFound:
-        # 403 con email de la SA para mostrar en el front
+        # No existe o no accesible -> tratar como 403 para UX
         return JSONResponse(
             status_code=403,
             content={
@@ -169,15 +162,29 @@ def _open_spreadsheet(sheet_id: str):
                 "service_account_email": get_service_account_email(),
             },
         )
+    except gspread.exceptions.APIError as e:
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        if code in (401, 403):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        "La cuenta de servicio no tiene acceso al Sheet. "
+                        "Compártelo con: " + get_service_account_email()
+                    ),
+                    "service_account_email": get_service_account_email(),
+                },
+            )
+        raise HTTPException(502, f"Google Sheets API error (code={code}): {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Error abriendo spreadsheet: {e}")
 
 def _pick_products_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
-    # 1) Nombres comunes
     for name in ("Products", "Inventario", "Inventory", "Stock"):
         try:
             return sh.worksheet(name)
         except Exception:
             pass
-    # 2) Heurística por headers
     for ws in sh.worksheets():
         headers = [h.strip().lower() for h in (ws.row_values(1) or [])]
         score = 0
@@ -186,7 +193,6 @@ def _pick_products_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
                 score += 1
         if score >= 2:
             return ws
-    # 3) Fallback: la primera
     return sh.sheet1
 
 def _summarize_records(rows: list[dict]) -> dict:
@@ -205,6 +211,43 @@ def _summarize_records(rows: list[dict]) -> dict:
             pass
     return {"sku_count": len(skus), "low_stock_items": low_items}
 
+# --- Helpers para alertas de bajo stock (demo) ---
+def _first(d: dict, keys: list[str]):
+    for k in keys:
+        if k in d and str(d[k]).strip() != "":
+            return d[k]
+    return None
+
+def _to_int(x):
+    try:
+        s = str(x).strip().replace(",", "")
+        import re as _re
+        m = _re.search(r"-?\d+", s)
+        if m:
+            return int(m.group(0))
+        return int(float(s))
+    except Exception:
+        return None
+
+def _low_stock_alerts(rows: list[dict]) -> list[dict]:
+    """
+    Devuelve [{sku, name, stock, threshold}] cuando stock <= threshold.
+    Soporta varios nombres de columnas típicos.
+    """
+    alerts = []
+    for r in rows:
+        stock = _to_int(_first(r, ["Stock", "stock", "cantidad", "qty", "existencias"]))
+        thr   = _to_int(_first(r, ["LowThreshold", "lowthreshold", "min", "mínimo", "minimo", "reorder", "reorden"]))
+        if thr is None:
+            continue
+        if stock is None:
+            stock = 0
+        if stock <= thr:
+            sku  = str(_first(r, ["SKU", "sku", "codigo", "código", "ref", "referencia"]) or "").strip()
+            name = str(_first(r, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip()
+            alerts.append({"sku": sku, "name": name, "stock": stock, "threshold": thr})
+    return alerts
+
 # ====== API: conectar y leer inventario ======
 class ConnectBody(BaseModel):
     sheet: str
@@ -218,6 +261,8 @@ def connect_inventory(body: ConnectBody):
     ws = _pick_products_ws(sh)
     rows = ws.get_all_records()
     sample = rows[:10]
+    alerts = _low_stock_alerts(rows)[:50]  # demo
+
     summary = {
         "sheet_title": sh.title,
         "sheet_id": sid,
@@ -225,7 +270,13 @@ def connect_inventory(body: ConnectBody):
         "rows_total": len(rows),
         **_summarize_records(rows),
     }
-    return {"ok": True, "sheet_id": sid, "summary": summary, "sample": sample}
+    return {
+        "ok": True,
+        "sheet_id": sid,
+        "summary": summary,
+        "low_stock_alerts": alerts,
+        "sample": sample
+    }
 
 @app.get("/inv/data")
 def inv_data(sid: str):
@@ -235,15 +286,55 @@ def inv_data(sid: str):
         return sh
     ws = _pick_products_ws(sh)
     rows = ws.get_all_records()
+    alerts = _low_stock_alerts(rows)[:200]  # demo
+
     return {
         "ok": True,
         "sheet_title": sh.title,
         "worksheet": ws.title,
         "rows_total": len(rows),
         "summary": _summarize_records(rows),
+        "alerts": alerts,
         "items": rows[:200],  # muestra
     }
 
+
+# --- Helpers para alertas de bajo stock (demo) ---
+def _first(d: dict, keys: list[str]):
+    for k in keys:
+        if k in d and str(d[k]).strip() != "":
+            return d[k]
+    return None
+
+def _to_int(x):
+    try:
+        s = str(x).strip().replace(",", "")
+        import re as _re
+        m = _re.search(r"-?\d+", s)
+        if m:
+            return int(m.group(0))
+        return int(float(s))
+    except Exception:
+        return None
+
+def _low_stock_alerts(rows: list[dict]) -> list[dict]:
+    """
+    Devuelve [{sku, name, stock, threshold}] cuando stock <= threshold.
+    Soporta varios nombres de columnas típicos.
+    """
+    alerts = []
+    for r in rows:
+        stock = _to_int(_first(r, ["Stock", "stock", "cantidad", "qty", "existencias"]))
+        thr   = _to_int(_first(r, ["LowThreshold", "lowthreshold", "min", "mínimo", "minimo", "reorder", "reorden"]))
+        if thr is None:
+            continue
+        if stock is None:
+            stock = 0
+        if stock <= thr:
+            sku  = str(_first(r, ["SKU", "sku", "codigo", "código", "ref", "referencia"]) or "").strip()
+            name = str(_first(r, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip()
+            alerts.append({"sku": sku, "name": name, "stock": stock, "threshold": thr})
+    return alerts
 
 
 
@@ -415,62 +506,142 @@ def inventory_view(sheet_id: str):
 @app.get("/inv", include_in_schema=False)
 def inv_legacy(sid: str):
     return RedirectResponse(f"/inventory?sheet_id={quote(sid)}", status_code=307)
-
 INVENTORY_HTML = r"""
 <!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Inventario conectado</title>
+<title>Inventario conectado — Demo</title>
 <style>
-  :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6}
-  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
-  main{max-width:980px;margin:6vh auto;padding:24px}
+  :root{
+    --bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;
+    --accent:#14ae5c;--warn:#ffb703;--danger:#ff6b6b
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  main{max-width:1100px;margin:6vh auto;padding:24px}
+  .grid{display:grid;grid-template-columns:2.2fr 1fr;gap:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
-  h1{margin:0 0 12px}
+  h1,h2{margin:0 0 12px}
+  small{color:var(--muted)}
   table{width:100%;border-collapse:collapse;margin-top:10px}
   th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}
-  small{color:var(--muted)}
+  .pill{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--muted)}
+  .tag-demo{display:inline-block;margin-left:8px;font-size:12px;padding:2px 8px;border-radius:999px;background:#223;opacity:.8}
+  .alert{border-left:4px solid var(--warn);padding-left:10px;margin:10px 0}
+  .alert strong{color:#fff}
+  .alert small{color:var(--muted)}
+  .alert.danger{border-left-color:var(--danger)}
+  .inp{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
+  .btn{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:var(--accent);color:#fff;font-weight:700;cursor:pointer}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 </style>
 </head>
 <body>
 <main>
-  <div class="card">
-    <h1>Inventario conectado</h1>
-    <small id="meta">Cargando…</small>
-    <div id="wrap"></div>
+  <div class="grid">
+    <!-- Principal: tabla -->
+    <section class="card">
+      <h1>
+        Inventario conectado
+        <span class="tag-demo">DEMO</span>
+      </h1>
+      <small id="meta">Cargando…</small>
+      <div id="wrap"></div>
+    </section>
+
+    <!-- Sidebar: alertas + email -->
+    <aside class="card">
+      <h2>Stock bajo</h2>
+      <small id="alertMeta">Analizando…</small>
+      <div id="alertsBox" style="margin-top:8px"></div>
+
+      <div style="margin-top:18px">
+        <h2>Notificar a</h2>
+        <small class="pill">Solo visual (se guarda localmente)</small>
+        <div class="row" style="margin-top:8px">
+          <input id="notifyEmail" class="inp" type="email" placeholder="correo@tuempresa.com">
+          <button class="btn" onclick="saveEmail()">Guardar</button>
+        </div>
+        <small id="emailMsg" style="display:block;margin-top:6px;color:var(--muted)"></small>
+      </div>
+    </aside>
   </div>
 </main>
+
 <script>
-const SID="__SID__";
-(async function(){
-  try{
-    const res = await fetch('/inv/data?sid=' + encodeURIComponent(SID));
-    const j = await res.json();
-    if(!res.ok){ document.getElementById('meta').textContent = j.detail || 'Error'; return; }
+(function(){
+  const $ = s => document.querySelector(s);
 
-    document.getElementById('meta').textContent =
-      `${j.sheet_title} — hoja: ${j.worksheet} — filas: ${j.rows_total} — SKUs: ${j.summary?.sku_count ?? '-'} — Low stock: ${j.summary?.low_stock_items ?? '-'}`;
-
-    const rows = j.items || [];
-    if(!rows.length){ document.getElementById('wrap').innerHTML = '<p>No hay filas.</p>'; return; }
-
+  function renderTable(rows){
+    if(!rows || !rows.length){ $("#wrap").innerHTML = '<p>No hay filas.</p>'; return; }
     const cols = Object.keys(rows[0]);
     let html = '<table><thead><tr>' + cols.map(c=>'<th>'+c+'</th>').join('') + '</tr></thead><tbody>';
     for(const r of rows){
       html += '<tr>' + cols.map(c=>'<td>'+(r[c] ?? '')+'</td>').join('') + '</tr>';
     }
     html += '</tbody></table>';
-    document.getElementById('wrap').innerHTML = html;
-  }catch(e){
-    document.getElementById('meta').textContent = 'Error: ' + (e && e.message || e);
+    $("#wrap").innerHTML = html;
   }
+
+  function renderAlerts(alerts){
+    const meta = $("#alertMeta");
+    const box  = $("#alertsBox");
+    if(!alerts || alerts.length===0){
+      meta.textContent = 'Sin alertas de stock.';
+      box.innerHTML = '';
+      return;
+    }
+    meta.textContent = alerts.length + ' alerta(s).';
+    const items = alerts.slice(0,50).map(a=>{
+      const sev = (a.threshold !== null && a.stock !== null && a.stock <= 0) ? 'danger' : '';
+      const name = (a.name || '').replace(/</g,'&lt;');
+      const sku  = (a.sku  || '').replace(/</g,'&lt;');
+      return `
+        <div class="alert ${sev}">
+          <strong>${sku || '(sin SKU)'}</strong> — ${name || '(sin nombre)'}<br>
+          <small>stock: ${a.stock ?? '-'} / umbral: ${a.threshold ?? '-'}</small>
+        </div>
+      `;
+    }).join('');
+    box.innerHTML = items;
+  }
+
+  function saveEmail(){
+    const v = ($("#notifyEmail").value || '').trim();
+    localStorage.setItem('inv_notify_email', v);
+    $("#emailMsg").textContent = v ? ('Guardado: ' + v) : 'Correo borrado.';
+  }
+
+  // Init
+  window.addEventListener('load', async ()=>{
+    $("#notifyEmail").value = localStorage.getItem('inv_notify_email') || '';
+
+    const url = new URL(location.href);
+    const sid = url.searchParams.get('sid') || (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
+    if(!sid){ $("#meta").textContent = 'Falta sid'; return; }
+
+    try{
+      const res = await fetch('/inv/data?sid=' + encodeURIComponent(sid));
+      const j = await res.json();
+      if(!res.ok){ $("#meta").textContent = j.detail || 'Error'; return; }
+
+      $("#meta").textContent =
+        `${j.sheet_title} — hoja: ${j.worksheet} — filas: ${j.rows_total} — SKUs: ${j?.summary?.sku_count ?? '-'} — Low stock: ${j?.summary?.low_stock_items ?? '-'}`;
+
+      renderTable(j.items || []);
+      renderAlerts(j.alerts || []);
+    }catch(e){
+      $("#meta").textContent = 'Error: ' + (e && e.message || e);
+    }
+  });
 })();
 </script>
 </body>
 </html>
 """
+
 
 
 

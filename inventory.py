@@ -16,6 +16,17 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';"
+    )
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
 
 # ---------- logging ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
@@ -238,6 +249,10 @@ def inv_data(sid: str):
 
 
 # ---------- diagnóstico ----------
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from urllib.parse import quote
+import html
+
 @app.get("/__routes", include_in_schema=False)
 def __routes():
     return [{"path": r.path, "methods": sorted(list(getattr(r, "methods", []) or []))}
@@ -251,6 +266,20 @@ def ping():
 def _root_test():
     return "alive"
 
+# ---------- Cabeceras de seguridad (mitiga advertencias) ----------
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';"
+    )
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
+
+# ---------- HOME (vincular inventario) ----------
 DASHBOARD_HTML = r"""
 <!doctype html>
 <html lang="es">
@@ -309,14 +338,6 @@ DASHBOARD_HTML = r"""
 const $ = s => document.querySelector(s);
 function showMsg(t){ $("#msg").textContent = t || ""; }
 
-function extractSheetId(v){
-  if(!v) return null;
-  const m = v.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if(m) return m[1];
-  if(/^[a-zA-Z0-9-_]{20,}$/.test(v)) return v;
-  return null;
-}
-
 function updateButtonState(){
   const hasVal = ($("#sheet").value || "").trim().length > 0;
   $("#actionBtn").disabled = !hasVal;
@@ -350,13 +371,12 @@ async function connectNow(){
       const extra = j.service_account_email ? ` — comparte tu Sheet con: ${j.service_account_email}` : "";
       showMsg((j.detail || "No se pudo conectar") + extra);
     }else{
-      // guardamos
       localStorage.setItem("inv_sheet_url", raw);
       localStorage.setItem("inv_sheet_id", j.sheet_id);
       renderSaved();
       showMsg("Inventario conectado ✔");
-      // abre la interfaz de inventario en nueva pestaña
-      window.open('/inv?sid=' + encodeURIComponent(j.sheet_id), '_blank');
+      // Nueva ruta limpia:
+      window.location.href = '/inventory?sheet_id=' + encodeURIComponent(j.sheet_id);
     }
   }catch(e){
     showMsg("Error de red: " + (e && e.message || e));
@@ -384,9 +404,17 @@ window.addEventListener("input", e=>{
 </body>
 </html>
 """
-@app.get("/inv", response_class=HTMLResponse)
-def inv_page():
-    return HTMLResponse(INVENTORY_HTML)
+
+# ---------- Visor limpio /inventory ----------
+@app.get("/inventory", response_class=HTMLResponse, include_in_schema=False)
+def inventory_view(sheet_id: str):
+    # Inyectamos el sheet_id de forma segura
+    return HTMLResponse(INVENTORY_HTML.replace("__SID__", html.escape(sheet_id)))
+
+# Compatibilidad: /inv?sid=... -> redirige a /inventory?sheet_id=...
+@app.get("/inv", include_in_schema=False)
+def inv_legacy(sid: str):
+    return RedirectResponse(f"/inventory?sheet_id={quote(sid)}", status_code=307)
 
 INVENTORY_HTML = r"""
 <!doctype html>
@@ -415,13 +443,10 @@ INVENTORY_HTML = r"""
   </div>
 </main>
 <script>
+const SID="__SID__";
 (async function(){
-  const url = new URL(location.href);
-  const sid = url.searchParams.get('sid') || (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
-  if(!sid){ document.getElementById('meta').textContent = 'Falta sid'; return; }
-
   try{
-    const res = await fetch('/inv/data?sid=' + encodeURIComponent(sid));
+    const res = await fetch('/inv/data?sid=' + encodeURIComponent(SID));
     const j = await res.json();
     if(!res.ok){ document.getElementById('meta').textContent = j.detail || 'Error'; return; }
 
@@ -446,6 +471,7 @@ INVENTORY_HTML = r"""
 </body>
 </html>
 """
+
 
 
 

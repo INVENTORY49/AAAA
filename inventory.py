@@ -355,14 +355,14 @@ async def _security_headers(request, call_next):
     resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
 
-# ---------- HOME (vincular inventario) ----------
+# ---------- HOME (link inventory) ----------
 DASHBOARD_HTML = r"""
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Inventory — Vincular inventario</title>
+  <title>Inventory — Link your inventory</title>
   <style>
     :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
     *{box-sizing:border-box}
@@ -386,15 +386,15 @@ DASHBOARD_HTML = r"""
 <body>
   <main>
     <section class="card">
-      <h1>Vincula aquí tu inventario</h1>
-      <p class="muted">Pega el <b>link del inventario</b>. Si es Google Sheets, detectaremos el ID y lo conectaremos.</p>
+      <h1>Link your inventory</h1>
+      <p class="muted">Paste your <b>inventory link</b>. If it’s a Google Sheet, we’ll detect the ID and connect.</p>
 
-      <label for="sheet" class="muted">URL del inventario</label>
+      <label for="sheet" class="muted">Inventory URL</label>
       <input id="sheet" class="inp" type="text" placeholder="https://docs.google.com/spreadsheets/d/…">
 
       <div class="actions">
-        <button id="actionBtn" class="btn" disabled onclick="connectNow()">Conectar con inventario</button>
-        <button class="btn-outline" onclick="clearUrl()">Quitar</button>
+        <button id="actionBtn" class="btn" disabled onclick="connectNow()">Connect inventory</button>
+        <button class="btn-outline" onclick="clearUrl()">Clear</button>
       </div>
 
       <p id="msg" class="muted" style="margin-top:8px"></p>
@@ -429,10 +429,10 @@ function renderSaved(){
 
 async function connectNow(){
   const raw = ($("#sheet").value || "").trim();
-  if(!raw){ showMsg("Escribe un enlace primero."); return; }
+  if(!raw){ showMsg("Enter a link first."); return; }
 
   const btn = $("#actionBtn");
-  btn.disabled = true; const prev = btn.textContent; btn.textContent = "Conectando…";
+  btn.disabled = true; const prev = btn.textContent; btn.textContent = "Connecting…";
   showMsg("");
 
   try{
@@ -444,18 +444,18 @@ async function connectNow(){
     const j = await res.json().catch(()=>({}));
 
     if(!res.ok){
-      const extra = j.service_account_email ? ` — comparte tu Sheet con: ${j.service_account_email}` : "";
-      showMsg((j.detail || "No se pudo conectar") + extra);
+      const extra = j.service_account_email ? ` — share your Sheet with: ${j.service_account_email}` : "";
+      showMsg((j.detail || "Couldn’t connect") + extra);
     }else{
       localStorage.setItem("inv_sheet_url", raw);
       localStorage.setItem("inv_sheet_id", j.sheet_id);
       renderSaved();
-      showMsg("Inventario conectado ✔");
-      // Nueva ruta limpia:
+      showMsg("Inventory connected ✔");
+      // clean route for the connected view
       window.location.href = '/inventory?sheet_id=' + encodeURIComponent(j.sheet_id);
     }
   }catch(e){
-    showMsg("Error de red: " + (e && e.message || e));
+    showMsg("Network error: " + (e && e.message || e));
   }finally{
     btn.disabled = false; btn.textContent = prev;
   }
@@ -465,7 +465,7 @@ function clearUrl(){
   localStorage.removeItem("inv_sheet_url");
   localStorage.removeItem("inv_sheet_id");
   $("#sheet").value = "";
-  updateButtonState(); renderSaved(); showMsg("Se eliminó el vínculo guardado.");
+  updateButtonState(); renderSaved(); showMsg("Saved link removed.");
 }
 
 window.addEventListener("load", ()=>{
@@ -481,6 +481,7 @@ window.addEventListener("input", e=>{
 </html>
 """
 
+
 # ---------- Visor limpio /inventory ----------
 @app.get("/inventory", response_class=HTMLResponse, include_in_schema=False)
 def inventory_view(sheet_id: str):
@@ -493,11 +494,11 @@ def inv_legacy(sid: str):
     return RedirectResponse(f"/inventory?sheet_id={quote(sid)}", status_code=307)
 INVENTORY_HTML = r"""
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Inventario conectado — Demo</title>
+<title>Inventory connected — Demo</title>
 <style>
   :root{
     --bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;
@@ -526,28 +527,28 @@ INVENTORY_HTML = r"""
 <body>
 <main>
   <div class="grid">
-    <!-- Principal: tabla -->
+    <!-- Main: table -->
     <section class="card">
       <h1>
-        Inventario conectado
+        Inventory connected
         <span class="tag-demo">DEMO</span>
       </h1>
-      <small id="meta">Cargando…</small>
+      <small id="meta">Loading…</small>
       <div id="wrap"></div>
     </section>
 
-    <!-- Sidebar: alertas + email -->
+    <!-- Sidebar: alerts + email -->
     <aside class="card">
-      <h2>Stock bajo</h2>
-      <small id="alertMeta">Analizando…</small>
+      <h2>Low stock</h2>
+      <small id="alertMeta">Scanning…</small>
       <div id="alertsBox" style="margin-top:8px"></div>
 
       <div style="margin-top:18px">
-        <h2>Notificar a</h2>
-        <small class="pill">Solo visual (se guarda localmente)</small>
+        <h2>Notify</h2>
+        <small class="pill">Visual only (saved locally)</small>
         <div class="row" style="margin-top:8px">
-          <input id="notifyEmail" class="inp" type="email" placeholder="correo@tuempresa.com">
-          <button class="btn" onclick="saveEmail()">Guardar</button>
+          <input id="notifyEmail" class="inp" type="email" placeholder="you@company.com">
+          <button class="btn" onclick="saveEmail()">Save</button>
         </div>
         <small id="emailMsg" style="display:block;margin-top:6px;color:var(--muted)"></small>
       </div>
@@ -560,7 +561,7 @@ INVENTORY_HTML = r"""
   const $ = s => document.querySelector(s);
 
   function renderTable(rows){
-    if(!rows || !rows.length){ $("#wrap").innerHTML = '<p>No hay filas.</p>'; return; }
+    if(!rows || !rows.length){ $("#wrap").innerHTML = '<p>No rows.</p>'; return; }
     const cols = Object.keys(rows[0]);
     let html = '<table><thead><tr>' + cols.map(c=>'<th>'+c+'</th>').join('') + '</tr></thead><tbody>';
     for(const r of rows){
@@ -574,19 +575,19 @@ INVENTORY_HTML = r"""
     const meta = $("#alertMeta");
     const box  = $("#alertsBox");
     if(!alerts || alerts.length===0){
-      meta.textContent = 'Sin alertas de stock.';
+      meta.textContent = 'No low-stock alerts.';
       box.innerHTML = '';
       return;
     }
-    meta.textContent = alerts.length + ' alerta(s).';
+    meta.textContent = alerts.length + ' alert(s).';
     const items = alerts.slice(0,50).map(a=>{
       const sev = (a.threshold !== null && a.stock !== null && a.stock <= 0) ? 'danger' : '';
       const name = (a.name || '').replace(/</g,'&lt;');
       const sku  = (a.sku  || '').replace(/</g,'&lt;');
       return `
         <div class="alert ${sev}">
-          <strong>${sku || '(sin SKU)'}</strong> — ${name || '(sin nombre)'}<br>
-          <small>stock: ${a.stock ?? '-'} / umbral: ${a.threshold ?? '-'}</small>
+          <strong>${sku || '(no SKU)'}</strong> — ${name || '(no name)'}<br>
+          <small>stock: ${a.stock ?? '-'} / threshold: ${a.threshold ?? '-'}</small>
         </div>
       `;
     }).join('');
@@ -596,7 +597,7 @@ INVENTORY_HTML = r"""
   function saveEmail(){
     const v = ($("#notifyEmail").value || '').trim();
     localStorage.setItem('inv_notify_email', v);
-    $("#emailMsg").textContent = v ? ('Guardado: ' + v) : 'Correo borrado.';
+    $("#emailMsg").textContent = v ? ('Saved: ' + v) : 'Email cleared.';
   }
 
   // Init
@@ -604,8 +605,10 @@ INVENTORY_HTML = r"""
     $("#notifyEmail").value = localStorage.getItem('inv_notify_email') || '';
 
     const url = new URL(location.href);
-    const sid = url.searchParams.get('sid') || (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
-    if(!sid){ $("#meta").textContent = 'Falta sid'; return; }
+    // accept both ?sheet_id= and ?sid= for compatibility
+    const sid = url.searchParams.get('sheet_id') || url.searchParams.get('sid') ||
+                (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
+    if(!sid){ $("#meta").textContent = 'Missing sheet_id'; return; }
 
     try{
       const res = await fetch('/inv/data?sid=' + encodeURIComponent(sid));
@@ -613,7 +616,7 @@ INVENTORY_HTML = r"""
       if(!res.ok){ $("#meta").textContent = j.detail || 'Error'; return; }
 
       $("#meta").textContent =
-        `${j.sheet_title} — hoja: ${j.worksheet} — filas: ${j.rows_total} — SKUs: ${j?.summary?.sku_count ?? '-'} — Low stock: ${j?.summary?.low_stock_items ?? '-'}`;
+        `${j.sheet_title} — sheet: ${j.worksheet} — rows: ${j.rows_total} — SKUs: ${j?.summary?.sku_count ?? '-'} — Low stock: ${j?.summary?.low_stock_items ?? '-'}`;
 
       renderTable(j.items || []);
       renderAlerts(j.alerts || []);
@@ -626,6 +629,7 @@ INVENTORY_HTML = r"""
 </body>
 </html>
 """
+
 
 
 

@@ -50,7 +50,7 @@ async def _http_exc(request: Request, exc: StarletteHTTPException):
 
 
 # ---------- PROCESO DE VINCULACION DE INVENTARIO  ----------
-import os, re, json
+import os, re, json, base64
 from fastapi import HTTPException
 from pydantic import BaseModel
 import gspread
@@ -60,16 +60,68 @@ from fastapi.responses import JSONResponse
 SHEETS_SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def _load_sa_info() -> dict:
-    sa_env = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not sa_env:
-        raise HTTPException(
-            500,
-            "Falta GOOGLE_SERVICE_ACCOUNT_JSON en variables de entorno."
-        )
-    try:
-        return json.loads(sa_env)
-    except Exception:
-        raise HTTPException(500, "GOOGLE_SERVICE_ACCOUNT_JSON no es JSON válido")
+    """
+    Carga credenciales desde variables de entorno en este orden:
+      1) GOOGLE_CREDS_JSON          (ruta a archivo o JSON plano)
+      2) GOOGLE_CREDS_JSON_B64      (JSON en Base64)
+      3) GOOGLE_SERVICE_ACCOUNT_JSON (compatibilidad: ruta o JSON)
+      4) GOOGLE_SERVICE_ACCOUNT_JSON_B64 (compatibilidad: Base64)
+    """
+    # Preferidas en Render:
+    raw = os.getenv("GOOGLE_CREDS_JSON") or ""
+    b64 = os.getenv("GOOGLE_CREDS_JSON_B64") or ""
+
+    # Compat (por si ya las tienes puestas):
+    raw_fallback = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+    b64_fallback = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64") or ""
+
+    # 1) GOOGLE_CREDS_JSON (ruta o JSON)
+    if raw:
+        if os.path.exists(raw):  # archivo
+            try:
+                with open(raw, "r", encoding="utf-8") as f:
+                    return json.loads(f.read())
+            except Exception as e:
+                raise HTTPException(500, f"Archivo de credenciales inválido en GOOGLE_CREDS_JSON: {e}")
+        # JSON plano
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+
+    # 2) GOOGLE_CREDS_JSON_B64 (Base64)
+    if b64:
+        try:
+            dec = base64.b64decode(b64).decode("utf-8")
+            return json.loads(dec)
+        except Exception as e:
+            raise HTTPException(500, f"GOOGLE_CREDS_JSON_B64 inválido: {e}")
+
+    # 3) Compat: GOOGLE_SERVICE_ACCOUNT_JSON (ruta o JSON)
+    if raw_fallback:
+        if os.path.exists(raw_fallback):
+            try:
+                with open(raw_fallback, "r", encoding="utf-8") as f:
+                    return json.loads(f.read())
+            except Exception as e:
+                raise HTTPException(500, f"Archivo inválido en GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+        try:
+            return json.loads(raw_fallback)
+        except Exception:
+            pass
+
+    # 4) Compat: GOOGLE_SERVICE_ACCOUNT_JSON_B64 (Base64)
+    if b64_fallback:
+        try:
+            dec = base64.b64decode(b64_fallback).decode("utf-8")
+            return json.loads(dec)
+        except Exception as e:
+            raise HTTPException(500, f"GOOGLE_SERVICE_ACCOUNT_JSON_B64 inválido: {e}")
+
+    raise HTTPException(
+        500,
+        "Faltan credenciales: define GOOGLE_CREDS_JSON (ruta o JSON) o GOOGLE_CREDS_JSON_B64."
+    )
 
 def get_service_account_email() -> str:
     try:
@@ -90,12 +142,12 @@ def extract_sheet_id(sheet_url_or_id: str) -> str:
         return sheet_url_or_id
     raise HTTPException(400, "URL/ID de Google Sheets inválida")
 
-def _open_spreadsheet(sheet_id: str) -> gspread.Spreadsheet:
+def _open_spreadsheet(sheet_id: str):
     gc = _gspread_client()
     try:
         return gc.open_by_key(sheet_id)
     except gspread.exceptions.SpreadsheetNotFound:
-        # Devolvemos 403 con email de la SA para que el front lo muestre
+        # 403 con email de la SA para mostrar en el front
         return JSONResponse(
             status_code=403,
             content={
@@ -127,14 +179,12 @@ def _pick_products_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
     return sh.sheet1
 
 def _summarize_records(rows: list[dict]) -> dict:
-    # Conteo SKUs únicos, low stock si hay columnas
     skus = set()
     low_items = 0
     for r in rows:
         sku = str(r.get("SKU", r.get("sku", ""))).strip()
         if sku:
             skus.add(sku)
-        # low stock
         try:
             stock = int(str(r.get("Stock", r.get("stock", 0))).split()[0].replace(",", ""))
             th = int(str(r.get("LowThreshold", r.get("lowthreshold", 0))).split()[0].replace(",", ""))
@@ -152,10 +202,8 @@ class ConnectBody(BaseModel):
 def connect_inventory(body: ConnectBody):
     sid = extract_sheet_id(body.sheet)
     sh = _open_spreadsheet(sid)
-    # _open_spreadsheet puede devolver JSONResponse en caso de 403
-    if isinstance(sh, JSONResponse):
+    if isinstance(sh, JSONResponse):  # 403 sin acceso
         return sh
-
     ws = _pick_products_ws(sh)
     rows = ws.get_all_records()
     sample = rows[:10]
@@ -182,9 +230,8 @@ def inv_data(sid: str):
         "worksheet": ws.title,
         "rows_total": len(rows),
         "summary": _summarize_records(rows),
-        "items": rows[:200],  # limit de muestra
+        "items": rows[:200],  # muestra
     }
-
 
 
 

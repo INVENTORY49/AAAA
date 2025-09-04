@@ -212,6 +212,9 @@ def _summarize_records(rows: list[dict]) -> dict:
     return {"sku_count": len(skus), "low_stock_items": low_items}
 
 # --- Helpers para alertas de bajo stock (demo) ---
+
+LOW_STOCK_THRESHOLD = int(os.getenv("LOW_STOCK_THRESHOLD", "5"))  # por defecto 5
+
 def _first(d: dict, keys: list[str]):
     for k in keys:
         if k in d and str(d[k]).strip() != "":
@@ -231,21 +234,30 @@ def _to_int(x):
 
 def _low_stock_alerts(rows: list[dict]) -> list[dict]:
     """
-    Devuelve [{sku, name, stock, threshold}] cuando stock <= threshold.
-    Soporta varios nombres de columnas típicos.
+    Devuelve [{sku, name, stock, threshold}] cuando cantidad < LOW_STOCK_THRESHOLD.
+    Usa columnas típicas para cantidad: cantidad, qty, existencias, unidades
+    (si no están, intenta con 'Stock'/'stock' solo si es numérica).
     """
     alerts = []
     for r in rows:
-        stock = _to_int(_first(r, ["Stock", "stock", "cantidad", "qty", "existencias"]))
-        thr   = _to_int(_first(r, ["LowThreshold", "lowthreshold", "min", "mínimo", "minimo", "reorder", "reorden"]))
-        if thr is None:
-            continue
-        if stock is None:
-            stock = 0
-        if stock <= thr:
+        # cantidad REAL (numérica), evita usar "stock" si es "SI/NO"
+        qty = _to_int(_first(r, ["cantidad", "qty", "existencias", "unidades"]))
+        if qty is None:
+            # fallback solo si 'stock' es numérico
+            qty = _to_int(_first(r, ["Stock", "stock"]))
+
+        if qty is None:
+            continue  # no hay cantidad interpretable
+
+        if qty < LOW_STOCK_THRESHOLD:  # <-- REGLA: menos de 5 (o el umbral)
             sku  = str(_first(r, ["SKU", "sku", "codigo", "código", "ref", "referencia"]) or "").strip()
             name = str(_first(r, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip()
-            alerts.append({"sku": sku, "name": name, "stock": stock, "threshold": thr})
+            alerts.append({
+                "sku": sku,
+                "name": name,
+                "stock": qty,
+                "threshold": LOW_STOCK_THRESHOLD
+            })
     return alerts
 
 # ====== API: conectar y leer inventario ======
@@ -297,46 +309,6 @@ def inv_data(sid: str):
         "alerts": alerts,
         "items": rows[:200],  # muestra
     }
-
-
-# --- Helpers para alertas de bajo stock (demo) ---
-def _first(d: dict, keys: list[str]):
-    for k in keys:
-        if k in d and str(d[k]).strip() != "":
-            return d[k]
-    return None
-
-def _to_int(x):
-    try:
-        s = str(x).strip().replace(",", "")
-        import re as _re
-        m = _re.search(r"-?\d+", s)
-        if m:
-            return int(m.group(0))
-        return int(float(s))
-    except Exception:
-        return None
-
-def _low_stock_alerts(rows: list[dict]) -> list[dict]:
-    """
-    Devuelve [{sku, name, stock, threshold}] cuando stock <= threshold.
-    Soporta varios nombres de columnas típicos.
-    """
-    alerts = []
-    for r in rows:
-        stock = _to_int(_first(r, ["Stock", "stock", "cantidad", "qty", "existencias"]))
-        thr   = _to_int(_first(r, ["LowThreshold", "lowthreshold", "min", "mínimo", "minimo", "reorder", "reorden"]))
-        if thr is None:
-            continue
-        if stock is None:
-            stock = 0
-        if stock <= thr:
-            sku  = str(_first(r, ["SKU", "sku", "codigo", "código", "ref", "referencia"]) or "").strip()
-            name = str(_first(r, ["name", "Name", "nombre", "producto", "descripcion", "descripción"]) or "").strip()
-            alerts.append({"sku": sku, "name": name, "stock": stock, "threshold": thr})
-    return alerts
-
-
 
 
 # ---------- diagnóstico ----------

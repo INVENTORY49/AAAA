@@ -680,15 +680,12 @@ INVENTORY_HTML = r"""
 async def ui_root_head():
     return Response(status_code=200)
 
-# ---------- CATCH-ALL: cualquier GET vuelve al HOME ----------
-@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
-def catch_all(full_path: str):
-    return HTMLResponse(DASHBOARD_HTML)
-
 # ---------- Local run (opcional) ----------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("inventory:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
+
 # ---------- Calendar (stub) ----------
 CAL_HTML = r"""
 <!doctype html><html lang="es"><head>
@@ -697,12 +694,15 @@ CAL_HTML = r"""
 <style>
 :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
-main{max-width:720px;margin:8vh auto;padding:20px}
+main{max-width:820px;margin:8vh auto;padding:20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
 a.btn{display:inline-block;margin-bottom:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;color:var(--fg);text-decoration:none}
 input{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 button{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:var(--accent);color:#04160b;font-weight:800;cursor:pointer}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
+.muted{color:var(--muted)}
 </style></head><body>
 <main>
   <a class="btn" href="/">← Volver</a>
@@ -716,10 +716,46 @@ button{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:
       <input id="time" type="time"/>
       <input id="notes" placeholder="Notas"/>
     </div>
-    <div style="margin-top:10px"><button onclick="alert('Guardado (demo)')">Guardar</button></div>
+    <div style="margin-top:10px"><button id="save">Guardar</button></div>
+    <p id="msg" class="muted"></p>
   </section>
-</main></body></html>
+
+  <section class="card" style="margin-top:14px">
+    <h3>Agenda</h3>
+    <div id="list" class="muted">Sin registros…</div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+
+async function loadEvents(){
+  const r = await fetch('/api/calendar/events');
+  const evs = await r.json();
+  if(!evs.length){ $('#list').textContent = 'Sin registros…'; return; }
+  let html = '<table><thead><tr><th>Fecha</th><th>Hora</th><th>Nombre</th><th>Notas</th></tr></thead><tbody>';
+  for(const e of evs){
+    html += `<tr><td>${e.date||''}</td><td>${e.time||''}</td><td>${e.name||''}</td><td>${e.notes||''}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  $('#list').innerHTML = html;
+}
+
+async function saveEvent(){
+  const fd = new FormData();
+  fd.append('name', ($('#name').value||'').trim());
+  fd.append('date', ($('#date').value||'').trim());
+  fd.append('time', ($('#time').value||'').trim());
+  fd.append('notes', ($('#notes').value||'').trim());
+  const res = await fetch('/api/calendar/events', { method:'POST', body: fd });
+  if(res.ok){ $('#msg').textContent = 'Guardado ✔'; loadEvents(); }
+  else { $('#msg').textContent = 'Error al guardar'; }
+}
+
+window.addEventListener('load', ()=>{ loadEvents(); $('#save').onclick = saveEvent; });
+</script>
+</body></html>
 """
+
 
 @app.get("/calendar", response_class=HTMLResponse, include_in_schema=False)
 def calendar_page():
@@ -733,26 +769,65 @@ PROS_HTML = r"""
 <style>
 :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
-main{max-width:720px;margin:8vh auto;padding:20px}
+main{max-width:820px;margin:8vh auto;padding:20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
 a.btn{display:inline-block;margin-bottom:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;color:var(--fg);text-decoration:none}
 input,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
 label{display:block;margin:10px 0 6px;color:var(--muted)}
 button{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:var(--accent);color:#04160b;font-weight:800;cursor:pointer}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
+.muted{color:var(--muted)}
 </style></head><body>
 <main>
   <a class="btn" href="/">← Volver</a>
   <section class="card">
     <h2>Recibir CV & Prospectos (demo)</h2>
-    <label>Nombre</label><input placeholder="Nombre completo"/>
-    <label>Email</label><input type="email" placeholder="correo@ejemplo.com"/>
-    <label>Puesto de interés</label><input placeholder="Cargo"/>
-    <label>CV</label><input type="file" disabled/>
-    <div style="margin-top:10px"><button onclick="alert('Enviado (demo)')">Enviar</button></div>
-    <p class="muted" style="margin-top:8px">*Luego conectamos esto a backend para guardar archivos y datos.</p>
+    <label>Nombre</label><input id="name" placeholder="Nombre completo"/>
+    <label>Email</label><input id="email" type="email" placeholder="correo@ejemplo.com"/>
+    <label>Puesto de interés</label><input id="role" placeholder="Cargo"/>
+    <label>CV</label><input id="cv" type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"/>
+    <div style="margin-top:10px"><button id="send">Enviar</button></div>
+    <p id="msg" class="muted"></p>
   </section>
-</main></body></html>
+
+  <section class="card" style="margin-top:14px">
+    <h3>Prospectos</h3>
+    <div id="list" class="muted">Sin registros…</div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+
+async function loadPros(){
+  const r = await fetch('/api/prospects');
+  const arr = await r.json();
+  if(!arr.length){ $('#list').textContent = 'Sin registros…'; return; }
+  let html = '<table><thead><tr><th>Nombre</th><th>Email</th><th>Cargo</th><th>CV</th></tr></thead><tbody>';
+  for(const p of arr){
+    const link = p.cv_url ? `<a href="${p.cv_url}" target="_blank">ver archivo</a>` : '<span class="muted">—</span>';
+    html += `<tr><td>${p.name||''}</td><td>${p.email||''}</td><td>${p.role||''}</td><td>${link}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  $('#list').innerHTML = html;
+}
+
+async function sendPros(){
+  const fd = new FormData();
+  fd.append('name', ($('#name').value||'').trim());
+  fd.append('email', ($('#email').value||'').trim());
+  fd.append('role', ($('#role').value||'').trim());
+  if($('#cv').files[0]) fd.append('cv', $('#cv').files[0]);
+  const res = await fetch('/api/prospects', { method:'POST', body: fd });
+  if(res.ok){ $('#msg').textContent = 'Enviado ✔'; loadPros(); }
+  else { $('#msg').textContent = 'Error al enviar'; }
+}
+
+window.addEventListener('load', ()=>{ loadPros(); $('#send').onclick = sendPros; });
+</script>
+</body></html>
 """
+
 
 @app.get("/prospects", response_class=HTMLResponse, include_in_schema=False)
 def prospects_page():

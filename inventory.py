@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from urllib.parse import quote
 
 APP_NAME = "Inventory demo (catch-all)"
 
@@ -356,6 +358,51 @@ async def _security_headers(request, call_next):
     return resp
 
 # ---------- HOME (link inventory) ----------
+# ---------- LANDING ----------
+HOME_HTML = r"""
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Operaciones — Suite</title>
+  <style>
+    :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
+    *{box-sizing:border-box} body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--fg);margin:0}
+    main{max-width:960px;margin:8vh auto;padding:20px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;text-decoration:none;color:inherit}
+    .card:hover{outline:2px solid #233045}
+    h1{margin:0 0 14px} .muted{color:var(--muted)}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Suite de Operaciones</h1>
+    <p class="muted">Elige un módulo para continuar.</p>
+    <section class="grid">
+      <a class="card" href="/inventory/link">
+        <h2>Organizar Inventario</h2>
+        <p class="muted">Conecta tu Google Sheet y gestiona stock.</p>
+      </a>
+      <a class="card" href="/calendar">
+        <h2>Manager Calendar</h2>
+        <p class="muted">Citas, confirmación y notas (demo).</p>
+      </a>
+      <a class="card" href="/prospects">
+        <h2>Recibir CV & Prospectos</h2>
+        <p class="muted">Formulario simple y carga de CV (demo).</p>
+      </a>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def home():
+    return HTMLResponse(HOME_HTML)
+
 DASHBOARD_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -481,12 +528,10 @@ window.addEventListener("input", e=>{
 </html>
 """
 
+@app.get("/inventory/link", response_class=HTMLResponse, include_in_schema=False)
+def inventory_link():
+    return HTMLResponse(DASHBOARD_HTML)
 
-# ---------- Visor limpio /inventory ----------
-@app.get("/inventory", response_class=HTMLResponse, include_in_schema=False)
-def inventory_view(sheet_id: str):
-    # Inyectamos el sheet_id de forma segura
-    return HTMLResponse(INVENTORY_HTML.replace("__SID__", html.escape(sheet_id)))
 
 # Compatibilidad: /inv?sid=... -> redirige a /inventory?sheet_id=...
 @app.get("/inv", include_in_schema=False)
@@ -630,15 +675,6 @@ INVENTORY_HTML = r"""
 </html>
 """
 
-
-
-
-
-
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def ui_root():
-    return HTMLResponse(DASHBOARD_HTML)
-
 # Render hace HEAD / en healthchecks -> respondemos 200
 @app.head("/", include_in_schema=False)
 async def ui_root_head():
@@ -653,3 +689,75 @@ def catch_all(full_path: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("inventory:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+# ---------- Calendar (stub) ----------
+CAL_HTML = r"""
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Manager Calendar — Demo</title>
+<style>
+:root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+main{max-width:720px;margin:8vh auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+a.btn{display:inline-block;margin-bottom:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;color:var(--fg);text-decoration:none}
+input{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:var(--accent);color:#04160b;font-weight:800;cursor:pointer}
+</style></head><body>
+<main>
+  <a class="btn" href="/">← Volver</a>
+  <section class="card">
+    <h2>Nueva cita (demo)</h2>
+    <div class="row">
+      <input id="name" placeholder="Nombre"/>
+      <input id="date" type="date"/>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="time" type="time"/>
+      <input id="notes" placeholder="Notas"/>
+    </div>
+    <div style="margin-top:10px"><button onclick="alert('Guardado (demo)')">Guardar</button></div>
+  </section>
+</main></body></html>
+"""
+
+@app.get("/calendar", response_class=HTMLResponse, include_in_schema=False)
+def calendar_page():
+    return HTMLResponse(CAL_HTML)
+
+# ---------- Prospects (stub) ----------
+PROS_HTML = r"""
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Prospectos & CV — Demo</title>
+<style>
+:root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+main{max-width:720px;margin:8vh auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+a.btn{display:inline-block;margin-bottom:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;color:var(--fg);text-decoration:none}
+input,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0b0d10;color:var(--fg)}
+label{display:block;margin:10px 0 6px;color:var(--muted)}
+button{padding:10px 12px;border-radius:10px;border:1px solid #2e7d32;background:var(--accent);color:#04160b;font-weight:800;cursor:pointer}
+</style></head><body>
+<main>
+  <a class="btn" href="/">← Volver</a>
+  <section class="card">
+    <h2>Recibir CV & Prospectos (demo)</h2>
+    <label>Nombre</label><input placeholder="Nombre completo"/>
+    <label>Email</label><input type="email" placeholder="correo@ejemplo.com"/>
+    <label>Puesto de interés</label><input placeholder="Cargo"/>
+    <label>CV</label><input type="file" disabled/>
+    <div style="margin-top:10px"><button onclick="alert('Enviado (demo)')">Enviar</button></div>
+    <p class="muted" style="margin-top:8px">*Luego conectamos esto a backend para guardar archivos y datos.</p>
+  </section>
+</main></body></html>
+"""
+
+@app.get("/prospects", response_class=HTMLResponse, include_in_schema=False)
+def prospects_page():
+    return HTMLResponse(PROS_HTML)
+# Al final del archivo, después de /calendar y /prospects
+@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+def catch_all(full_path: str):
+    return HTMLResponse(HOME_HTML)

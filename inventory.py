@@ -361,11 +361,11 @@ async def _security_headers(request, call_next):
 # ---------- LANDING ----------
 HOME_HTML = r"""
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Operaciones — Suite</title>
+  <title>Operations — Suite</title>
   <style>
     :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
     *{box-sizing:border-box} body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--fg);margin:0}
@@ -378,26 +378,27 @@ HOME_HTML = r"""
 </head>
 <body>
   <main>
-    <h1>Suite de Operaciones</h1>
-    <p class="muted">Elige un módulo para continuar.</p>
+    <h1>Operations Suite</h1>
+    <p class="muted">Choose a module to continue.</p>
     <section class="grid">
       <a class="card" href="/inventory/link">
-        <h2>Organizar Inventario</h2>
-        <p class="muted">Conecta tu Google Sheet y gestiona stock.</p>
+        <h2>Organize Inventory</h2>
+        <p class="muted">Connect your Google Sheet and manage stock.</p>
       </a>
       <a class="card" href="/calendar">
-        <h2>Manager Calendar</h2>
-        <p class="muted">Citas, confirmación y notas (demo).</p>
+        <h2>Calendar Manager</h2>
+        <p class="muted">Appointments, confirmation, and notes (demo).</p>
       </a>
       <a class="card" href="/prospects">
-        <h2>Recibir CV & Prospectos</h2>
-        <p class="muted">Formulario simple y carga de CV (demo).</p>
+        <h2>Receive CVs & Prospects</h2>
+        <p class="muted">Simple form and CV upload (demo).</p>
       </a>
     </section>
   </main>
 </body>
 </html>
 """
+
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def home():
@@ -527,6 +528,7 @@ window.addEventListener("input", e=>{
 </body>
 </html>
 """
+
 
 @app.get("/inventory/link", response_class=HTMLResponse, include_in_schema=False)
 def inventory_link():
@@ -675,6 +677,7 @@ INVENTORY_HTML = r"""
 </html>
 """
 
+
 # Render hace HEAD / en healthchecks -> respondemos 200
 @app.head("/", include_in_schema=False)
 async def ui_root_head():
@@ -688,9 +691,9 @@ if __name__ == "__main__":
 
 # ---------- Calendar (stub) ----------
 CAL_HTML = r"""
-<!doctype html><html lang="es"><head>
+<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Manager Calendar — Demo</title>
+<title>Calendar Manager — Demo</title>
 <style>
 :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
@@ -705,24 +708,24 @@ th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
 .muted{color:var(--muted)}
 </style></head><body>
 <main>
-  <a class="btn" href="/">← Volver</a>
+  <a class="btn" href="/">← Back</a>
   <section class="card">
-    <h2>Nueva cita (demo)</h2>
+    <h2>New appointment (demo)</h2>
     <div class="row">
-      <input id="name" placeholder="Nombre"/>
+      <input id="name" placeholder="Name"/>
       <input id="date" type="date"/>
     </div>
     <div class="row" style="margin-top:10px">
       <input id="time" type="time"/>
-      <input id="notes" placeholder="Notas"/>
+      <input id="notes" placeholder="Notes"/>
     </div>
-    <div style="margin-top:10px"><button id="save">Guardar</button></div>
+    <div style="margin-top:10px"><button id="save">Save</button></div>
     <p id="msg" class="muted"></p>
   </section>
 
   <section class="card" style="margin-top:14px">
-    <h3>Agenda</h3>
-    <div id="list" class="muted">Sin registros…</div>
+    <h3>Schedule</h3>
+    <div id="list" class="muted">No records…</div>
   </section>
 </main>
 <script>
@@ -731,8 +734,8 @@ const $ = s => document.querySelector(s);
 async function loadEvents(){
   const r = await fetch('/api/calendar/events');
   const evs = await r.json();
-  if(!evs.length){ $('#list').textContent = 'Sin registros…'; return; }
-  let html = '<table><thead><tr><th>Fecha</th><th>Hora</th><th>Nombre</th><th>Notas</th></tr></thead><tbody>';
+  if(!evs.length){ $('#list').textContent = 'No records…'; return; }
+  let html = '<table><thead><tr><th>Date</th><th>Time</th><th>Name</th><th>Notes</th></tr></thead><tbody>';
   for(const e of evs){
     html += `<tr><td>${e.date||''}</td><td>${e.time||''}</td><td>${e.name||''}</td><td>${e.notes||''}</td></tr>`;
   }
@@ -747,8 +750,8 @@ async function saveEvent(){
   fd.append('time', ($('#time').value||'').trim());
   fd.append('notes', ($('#notes').value||'').trim());
   const res = await fetch('/api/calendar/events', { method:'POST', body: fd });
-  if(res.ok){ $('#msg').textContent = 'Guardado ✔'; loadEvents(); }
-  else { $('#msg').textContent = 'Error al guardar'; }
+  if(res.ok){ $('#msg').textContent = 'Saved ✔'; loadEvents(); }
+  else { $('#msg').textContent = 'Error saving'; }
 }
 
 window.addEventListener('load', ()=>{ loadEvents(); $('#save').onclick = saveEvent; });
@@ -756,16 +759,15 @@ window.addEventListener('load', ()=>{ loadEvents(); $('#save').onclick = saveEve
 </body></html>
 """
 
-
 @app.get("/calendar", response_class=HTMLResponse, include_in_schema=False)
 def calendar_page():
     return HTMLResponse(CAL_HTML)
 
 # ---------- Prospects (stub) ----------
 PROS_HTML = r"""
-<!doctype html><html lang="es"><head>
+<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Prospectos & CV — Demo</title>
+<title>Prospects & CV — Demo</title>
 <style>
 :root{--bg:#0b0d10;--card:#0f1318;--line:#1c2128;--fg:#e6eaf0;--muted:#8a94a6;--accent:#14ae5c}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
@@ -780,20 +782,20 @@ th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
 .muted{color:var(--muted)}
 </style></head><body>
 <main>
-  <a class="btn" href="/">← Volver</a>
+  <a class="btn" href="/">← Back</a>
   <section class="card">
-    <h2>Recibir CV & Prospectos (demo)</h2>
-    <label>Nombre</label><input id="name" placeholder="Nombre completo"/>
-    <label>Email</label><input id="email" type="email" placeholder="correo@ejemplo.com"/>
-    <label>Puesto de interés</label><input id="role" placeholder="Cargo"/>
+    <h2>Receive CVs & Prospects (demo)</h2>
+    <label>Name</label><input id="name" placeholder="Full name"/>
+    <label>Email</label><input id="email" type="email" placeholder="email@example.com"/>
+    <label>Position of interest</label><input id="role" placeholder="Role"/>
     <label>CV</label><input id="cv" type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"/>
-    <div style="margin-top:10px"><button id="send">Enviar</button></div>
+    <div style="margin-top:10px"><button id="send">Submit</button></div>
     <p id="msg" class="muted"></p>
   </section>
 
   <section class="card" style="margin-top:14px">
-    <h3>Prospectos</h3>
-    <div id="list" class="muted">Sin registros…</div>
+    <h3>Prospects</h3>
+    <div id="list" class="muted">No records…</div>
   </section>
 </main>
 <script>
@@ -802,10 +804,10 @@ const $ = s => document.querySelector(s);
 async function loadPros(){
   const r = await fetch('/api/prospects');
   const arr = await r.json();
-  if(!arr.length){ $('#list').textContent = 'Sin registros…'; return; }
-  let html = '<table><thead><tr><th>Nombre</th><th>Email</th><th>Cargo</th><th>CV</th></tr></thead><tbody>';
+  if(!arr.length){ $('#list').textContent = 'No records…'; return; }
+  let html = '<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>CV</th></tr></thead><tbody>';
   for(const p of arr){
-    const link = p.cv_url ? `<a href="${p.cv_url}" target="_blank">ver archivo</a>` : '<span class="muted">—</span>';
+    const link = p.cv_url ? `<a href="${p.cv_url}" target="_blank">view file</a>` : '<span class="muted">—</span>';
     html += `<tr><td>${p.name||''}</td><td>${p.email||''}</td><td>${p.role||''}</td><td>${link}</td></tr>`;
   }
   html += '</tbody></table>';
@@ -819,14 +821,15 @@ async function sendPros(){
   fd.append('role', ($('#role').value||'').trim());
   if($('#cv').files[0]) fd.append('cv', $('#cv').files[0]);
   const res = await fetch('/api/prospects', { method:'POST', body: fd });
-  if(res.ok){ $('#msg').textContent = 'Enviado ✔'; loadPros(); }
-  else { $('#msg').textContent = 'Error al enviar'; }
+  if(res.ok){ $('#msg').textContent = 'Submitted ✔'; loadPros(); }
+  else { $('#msg').textContent = 'Error submitting'; }
 }
 
 window.addEventListener('load', ()=>{ loadPros(); $('#send').onclick = sendPros; });
 </script>
 </body></html>
 """
+
 
 
 @app.get("/prospects", response_class=HTMLResponse, include_in_schema=False)

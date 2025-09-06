@@ -6,10 +6,20 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from urllib.parse import quote
+from fastapi import Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
+
+from fastapi import Request
+from fastapi.responses import RedirectResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+
+import logging
+
 
 APP_NAME = "Inventory demo (catch-all)"
 
-# Huella al importar
+#APP
 print(">>> [inventory] importado desde:", __file__, "  cwd:", os.getcwd(), "  sys.path[0]:", sys.path[0], flush=True)
 
 app = FastAPI(title=APP_NAME)
@@ -18,6 +28,28 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
+
+import time, logging
+
+logger = logging.getLogger("inventory")
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    t0 = time.time()
+    resp = await call_next(request)
+    dt = (time.time() - t0) * 1000
+    logger.info(
+        "FLOW %s %s?%s UA=%s Referer=%s Accept=%s -> %s (%.1f ms)",
+        request.method, request.url.path, request.url.query,
+        request.headers.get("user-agent","-"),
+        request.headers.get("referer","-"),
+        request.headers.get("accept","-"),
+        resp.status_code, dt
+    )
+    return resp
+
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     resp = await call_next(request)
@@ -275,20 +307,27 @@ def _low_stock_alerts(rows: list[dict]) -> list[dict]:
     return alerts
 
 
-# ====== API: conectar y leer inventario ======
+
+
+
+# -------- /connect ----------
 class ConnectBody(BaseModel):
-    sheet: str
+    sheet: str  # URL o ID crudo
 
 @app.post("/connect")
-def connect_inventory(body: ConnectBody):
+def connect_inventory(request: Request, body: ConnectBody):
     sid = extract_sheet_id(body.sheet)
+    log.info("[CONNECT] input=%s -> sid=%s", body.sheet, sid)
+
     sh = _open_spreadsheet(sid)
-    if isinstance(sh, JSONResponse):  # 403 sin acceso
+    if isinstance(sh, JSONResponse):  # p.ej. 403 sin acceso
+        log.warning("[CONNECT] sin acceso sid=%s -> JSONResponse", sid)
         return sh
-    ws = _pick_products_ws(sh)
-    rows = ws.get_all_records()
-    sample = rows[:10]
-    alerts = _low_stock_alerts(rows)[:50]  # demo
+
+    ws     = _pick_products_ws(sh)
+    rows   = ws.get_all_records()
+    items  = rows[:10]
+    alerts = _low_stock_alerts(rows)[:50]
 
     summary = {
         "sheet_title": sh.title,
@@ -297,52 +336,149 @@ def connect_inventory(body: ConnectBody):
         "rows_total": len(rows),
         **_summarize_records(rows),
     }
-    return {
+
+    # --- Detección robusta de navegación vs API ---
+    accept = (request.headers.get("accept") or "").lower()
+    xreq   = (request.headers.get("x-requested-with") or "").lower()
+    mode   = (request.headers.get("sec-fetch-mode") or "").lower()
+    dest   = (request.headers.get("sec-fetch-dest") or "").lower()
+    is_browser_nav = (mode == "navigate") or (dest == "document") or ("text/html" in accept)
+    want_json = ("application/json" in accept) or ("json" in accept) or (xreq in ("fetch", "xmlhttprequest"))
+
+    log.info("[CONNECT] accept=%s xreq=%s mode=%s dest=%s -> nav=%s want_json=%s",
+             accept, xreq, mode, dest, is_browser_nav, want_json)
+
+    # Si es navegación de navegador y NO pidió JSON explícitamente -> redirige
+    if is_browser_nav and not want_json:
+        url = f"/inventory?sheet_id={quote(sid)}"
+        log.info("[CONNECT] 303 -> %s", url)
+        return RedirectResponse(url=url, status_code=303)
+
+    # API/fetch: responde JSON estandarizado
+    log.info("[CONNECT] 200 JSON sid=%s", sid)
+    return JSONResponse({
         "ok": True,
         "sheet_id": sid,
         "summary": summary,
-        "low_stock_alerts": alerts,
-        "sample": sample
-    }
+        "items": items,
+        "alerts": alerts,
+    })
 
+
+# -------- RUTAS ----------
 @app.get("/inv/data")
-def inv_data(sid: str):
+def inv_data(sid: str | None = None):
+    if not sid:
+        log.warning("[INV/DATA] missing sid -> 400")
+        return PlainTextResponse("Missing sid", status_code=400)
+
     sid = extract_sheet_id(sid)
+    log.info("[INV/DATA] sid=%s (start)", sid)
+
     sh = _open_spreadsheet(sid)
     if isinstance(sh, JSONResponse):
+        log.warning("[INV/DATA] sin acceso sid=%s -> JSONResponse", sid)
         return sh
+
     ws = _pick_products_ws(sh)
     rows = ws.get_all_records()
-    alerts = _low_stock_alerts(rows)[:200]  # demo
+    alerts = _low_stock_alerts(rows)[:200]
 
-    return {
+    payload = {
         "ok": True,
         "sheet_title": sh.title,
         "worksheet": ws.title,
         "rows_total": len(rows),
         "summary": _summarize_records(rows),
         "alerts": alerts,
-        "items": rows[:200],  # muestra
+        "items": rows[:200],
     }
+    log.info("[INV/DATA] sid=%s (ok) rows=%d alerts=%d", sid, len(rows), len(alerts))
+    return payload
 
-
-# ---------- diagnóstico ----------
+# ---------- diagnóstico mejorado ----------
+import inspect
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from urllib.parse import quote
-import html
 
 @app.get("/__routes", include_in_schema=False)
 def __routes():
-    return [{"path": r.path, "methods": sorted(list(getattr(r, "methods", []) or []))}
-            for r in app.router.routes]
+    out = []
+    for r in app.router.routes:
+        ep = getattr(r, "endpoint", None)
+        try:
+            file = inspect.getsourcefile(ep) if ep else None
+            line = inspect.getsourcelines(ep)[1] if ep else None
+        except Exception:
+            file, line = None, None
+        out.append({
+            "path": r.path,
+            "methods": sorted(list(getattr(r, "methods", []) or [])),
+            "endpoint": getattr(ep, "__name__", str(ep)),
+            "module": getattr(ep, "__module__", "?"),
+            "file": file,
+            "line": line,
+        })
+    return out
+@app.get("/__who", include_in_schema=False)
+def __who(path: str):
+    for r in app.router.routes:
+        if r.path == path:
+            ep = getattr(r, "endpoint", None)
+            try:
+                file = inspect.getsourcefile(ep) if ep else None
+                line = inspect.getsourcelines(ep)[1] if ep else None
+            except Exception:
+                file, line = None, None
+            return {
+                "path": r.path,
+                "methods": sorted(list(getattr(r, "methods", []) or [])),
+                "endpoint": getattr(ep, "__name__", str(ep)),
+                "module": getattr(ep, "__module__", "?"),
+                "file": file,
+                "line": line,
+            }
+    return {"error": "path not found", "path": path,
+            "available": sorted([rr.path for rr in app.router.routes])}
 
-@app.get("/ping", include_in_schema=False)
-def ping():
-    return {"pong": True}
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def home():
+    return HTMLResponse(HOME_HTML)
 
-@app.get("/_root_test", response_class=PlainTextResponse, include_in_schema=False)
-def _root_test():
-    return "alive"
+# ---------- Flujos del inventario ----------
+@app.get("/inventory/connect", response_class=HTMLResponse, include_in_schema=False)
+def inventory_connect():
+    return HTMLResponse(DASHBOARD_HTML)  # tu form de "Link your inventory"
+
+@app.get("/inventory", response_class=HTMLResponse)
+def inventory_view(sheet_id: str | None = None, sid: str | None = None):
+    if not (sheet_id or sid):
+        # si llegas sin ID, te llevo al conector
+        return RedirectResponse("/inventory/connect", status_code=302)
+    return HTMLResponse(INVENTORY_HTML)  # tu dashboard conectado
+
+# ⚠️ SOLO redirección a Google. NUNCA HTML aquí.
+@app.get("/inventory/link", include_in_schema=False)
+def inventory_link(sheet_id: str | None = None):
+    log.info("[INV/LINK] sheet_id=%s", sheet_id)
+    if not sheet_id:
+        log.warning("[INV/LINK] Missing sheet_id -> 400")
+        return PlainTextResponse("Missing sheet_id", status_code=400)
+    return RedirectResponse(f"https://docs.google.com/spreadsheets/d/{quote(sheet_id)}", status_code=302)
+
+# Compatibilidad: /inv?sid=... -> /inventory?sheet_id=...
+@app.get("/inv", include_in_schema=False)
+def inv_legacy(sid: str):
+    return RedirectResponse(f"/inventory?sheet_id={quote(sid)}", status_code=307)
+
+@app.get("/calendar", response_class=HTMLResponse, include_in_schema=False)
+def calendar_page():
+    return HTMLResponse(CAL_HTML)
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def catch_all(full_path: str):
+    # Nada de devolver HOME aquí. 404 para ver el error real.
+    raise HTTPException(status_code=404, detail="Not found")
+
 
 # ---------- Cabeceras de seguridad (mitiga advertencias) ----------
 @app.middleware("http")
@@ -357,8 +493,8 @@ async def _security_headers(request, call_next):
     resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
 
-# ---------- HOME (link inventory) ----------
-# ---------- LANDING ----------
+
+# ---------- HOME (enlace corregido) ----------
 HOME_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -381,7 +517,8 @@ HOME_HTML = r"""
     <h1>Operations Suite</h1>
     <p class="muted">Choose a module to continue.</p>
     <section class="grid">
-      <a class="card" href="/inventory/link">
+      <!-- ✅ al conector, NO a /inventory/link -->
+      <a class="card" href="/inventory/connect">
         <h2>Organize Inventory</h2>
         <p class="muted">Connect your Google Sheet and manage stock.</p>
       </a>
@@ -400,9 +537,8 @@ HOME_HTML = r"""
 """
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-def home():
-    return HTMLResponse(HOME_HTML)
+
+
 
 DASHBOARD_HTML = r"""
 <!doctype html>
@@ -530,15 +666,6 @@ window.addEventListener("input", e=>{
 """
 
 
-@app.get("/inventory/link", response_class=HTMLResponse, include_in_schema=False)
-def inventory_link():
-    return HTMLResponse(DASHBOARD_HTML)
-
-
-# Compatibilidad: /inv?sid=... -> redirige a /inventory?sheet_id=...
-@app.get("/inv", include_in_schema=False)
-def inv_legacy(sid: str):
-    return RedirectResponse(f"/inventory?sheet_id={quote(sid)}", status_code=307)
 INVENTORY_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -652,9 +779,16 @@ INVENTORY_HTML = r"""
     $("#notifyEmail").value = localStorage.getItem('inv_notify_email') || '';
 
     const url = new URL(location.href);
-    // accept both ?sheet_id= and ?sid= for compatibility
-    const sid = url.searchParams.get('sheet_id') || url.searchParams.get('sid') ||
-                (sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '');
+
+    // ✅ Si llega por URL, persiste el sheet_id/sid
+    const sidParam = url.searchParams.get('sheet_id') || url.searchParams.get('sid');
+    if (sidParam) {
+      sessionStorage.setItem('sid', sidParam);
+      localStorage.setItem('inv_sheet_id', sidParam);
+    }
+
+    // ✅ Usa el persistido si no viene en URL
+    const sid = sidParam || sessionStorage.getItem('sid') || localStorage.getItem('inv_sheet_id') || '';
     if(!sid){ $("#meta").textContent = 'Missing sheet_id'; return; }
 
     try{
@@ -678,15 +812,12 @@ INVENTORY_HTML = r"""
 """
 
 
+
 # Render hace HEAD / en healthchecks -> respondemos 200
 @app.head("/", include_in_schema=False)
 async def ui_root_head():
     return Response(status_code=200)
 
-# ---------- Local run (opcional) ----------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("inventory:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
 
 
 # ---------- Calendar (stub) ----------
@@ -759,9 +890,7 @@ window.addEventListener('load', ()=>{ loadEvents(); $('#save').onclick = saveEve
 </body></html>
 """
 
-@app.get("/calendar", response_class=HTMLResponse, include_in_schema=False)
-def calendar_page():
-    return HTMLResponse(CAL_HTML)
+
 
 # ---------- Prospects (stub) ----------
 PROS_HTML = r"""
@@ -832,10 +961,7 @@ window.addEventListener('load', ()=>{ loadPros(); $('#send').onclick = sendPros;
 
 
 
-@app.get("/prospects", response_class=HTMLResponse, include_in_schema=False)
-def prospects_page():
-    return HTMLResponse(PROS_HTML)
-# Al final del archivo, después de /calendar y /prospects
-@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
-def catch_all(full_path: str):
-    return HTMLResponse(HOME_HTML)
+# ---------- Local run (opcional) ----------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("inventory:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

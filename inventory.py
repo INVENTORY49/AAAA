@@ -474,10 +474,6 @@ def inv_legacy(sid: str):
 def calendar_page():
     return HTMLResponse(CAL_HTML)
 
-@app.get("/{full_path:path}", include_in_schema=False)
-def catch_all(full_path: str):
-    # Nada de devolver HOME aquí. 404 para ver el error real.
-    raise HTTPException(status_code=404, detail="Not found")
 
 
 # ---------- Cabeceras de seguridad (mitiga advertencias) ----------
@@ -968,3 +964,7 @@ def prospects_ui():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("inventory:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+@app.get("/{full_path:path}", include_in_schema=False)
+def catch_all(full_path: str):
+    # Nada de devolver HOME aquí. 404 para ver el error real.
+    raise HTTPException(status_code=404, detail="Not found")

@@ -958,6 +958,9 @@ window.addEventListener('load', ()=>{ loadPros(); $('#send').onclick = sendPros;
 </script>
 </body></html>
 """
+@app.get("/prospects", response_class=HTMLResponse, include_in_schema=False)
+def prospects_ui():
+    return HTMLResponse(PROS_HTML)
 
 
 
